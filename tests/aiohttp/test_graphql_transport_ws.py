@@ -3,6 +3,7 @@ import json
 from datetime import timedelta
 
 import pytest
+import pytest_asyncio
 
 from strawberry.subscriptions import GRAPHQL_TRANSPORT_WS_PROTOCOL
 from strawberry.subscriptions.protocols.graphql_transport_ws.types import (
@@ -17,6 +18,25 @@ from strawberry.subscriptions.protocols.graphql_transport_ws.types import (
     SubscribeMessagePayload,
 )
 from tests.aiohttp.app import create_app
+
+
+@pytest_asyncio.fixture
+async def ws(aiohttp_client):
+    """
+    A fixture returning a fully initialized graphql-transport-ws connection
+    """
+    app = create_app()
+    aiohttp_app_client = await aiohttp_client(app)
+
+    async with aiohttp_app_client.ws_connect(
+        "/graphql", protocols=[GRAPHQL_TRANSPORT_WS_PROTOCOL]
+    ) as ws:
+        await ws.send_json(ConnectionInitMessage().as_dict())
+        response = await ws.receive_json()
+        assert response == ConnectionAckMessage().as_dict()
+        yield ws
+        await ws.close()
+        assert ws.closed
 
 
 async def test_unknown_message_type(aiohttp_client):
@@ -564,6 +584,43 @@ async def test_subscription_exceptions(aiohttp_client):
 
         await ws.close()
         assert ws.closed
+
+
+async def test_subscription_errors_continue(ws):
+    """
+    Verify that an ExecutionResult with errors during subscription does not terminate
+    the subscription
+    """
+
+    await ws.send_json(
+        SubscribeMessage(
+            id="sub1",
+            payload=SubscribeMessagePayload(
+                query="subscription { flavorsInvalid }",
+            ),
+        ).as_dict()
+    )
+
+    response = await ws.receive_json()
+    assert response["type"] == NextMessage.type
+    assert response["id"] == "sub1"
+    assert response["payload"]["data"] == {"flavorsInvalid": "VANILLA"}
+
+    response = await ws.receive_json()
+    assert response["type"] == NextMessage.type
+    assert response["id"] == "sub1"
+    assert "data" not in response["payload"]
+    errors = response["payload"]["errors"]
+    assert "cannot represent value" in str(errors)
+
+    response = await ws.receive_json()
+    assert response["type"] == NextMessage.type
+    assert response["id"] == "sub1"
+    assert response["payload"]["data"] == {"flavorsInvalid": "CHOCOLATE"}
+
+    response = await ws.receive_json()
+    assert response["type"] == CompleteMessage.type
+    assert response["id"] == "sub1"
 
 
 async def test_single_result_query_operation(aiohttp_client):

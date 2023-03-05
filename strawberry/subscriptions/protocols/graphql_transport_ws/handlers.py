@@ -257,16 +257,15 @@ class BaseGraphQLTransportWSHandler(ABC):
     ) -> None:
         try:
             async for result in result_source:
+                payload = {"data": result.data}
                 if result.errors:
-                    error_payload = [format_graphql_error(err) for err in result.errors]
-                    error_message = ErrorMessage(id=operation_id, payload=error_payload)
-                    await self.send_message(error_message)
+                    payload["errors"] = [
+                        format_graphql_error(error) for error in result.errors
+                    ]
+                next_message = NextMessage(id=operation_id, payload=payload)
+                await self.send_message(next_message)
+                if result.errors:
                     self.schema.process_errors(result.errors)
-                    return
-                else:
-                    next_payload = {"data": result.data}
-                    next_message = NextMessage(id=operation_id, payload=next_payload)
-                    await self.send_message(next_message)
         except asyncio.CancelledError:
             # CancelledErrors are expected during task cleanup.
             return

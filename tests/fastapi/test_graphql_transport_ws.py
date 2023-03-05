@@ -458,11 +458,11 @@ def test_subscription_errors(test_client):
         )
 
         response = ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0]["path"] == ["error"]
-        assert response["payload"][0]["message"] == "TEST ERR"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0]["path"] == ["error"]
+        assert response["payload"]["errors"][0]["message"] == "TEST ERR"
 
         ws.close()
 
@@ -492,6 +492,52 @@ def test_subscription_exceptions(test_client):
         assert response["payload"][0].get("path") is None
         assert response["payload"][0].get("locations") is None
         assert response["payload"][0]["message"] == "TEST EXC"
+
+        ws.close()
+
+
+def test_subscription_errors_continue(test_client):
+    """
+    Verify that an ExecutionResult with errors during subscription does not terminate
+    the subscription
+    """
+    with test_client.websocket_connect(
+        "/graphql", [GRAPHQL_TRANSPORT_WS_PROTOCOL]
+    ) as ws:
+        ws.send_json(ConnectionInitMessage().as_dict())
+
+        response = ws.receive_json()
+        assert response == ConnectionAckMessage().as_dict()
+
+        ws.send_json(
+            SubscribeMessage(
+                id="sub1",
+                payload=SubscribeMessagePayload(
+                    query="subscription { flavorsInvalid }",
+                ),
+            ).as_dict()
+        )
+
+        response = ws.receive_json()
+        assert response["type"] == NextMessage.type
+        assert response["id"] == "sub1"
+        assert response["payload"]["data"] == {"flavorsInvalid": "VANILLA"}
+
+        response = ws.receive_json()
+        assert response["type"] == NextMessage.type
+        assert response["id"] == "sub1"
+        assert "data" not in response["payload"]
+        errors = response["payload"]["errors"]
+        assert "cannot represent value" in str(errors)
+
+        response = ws.receive_json()
+        assert response["type"] == NextMessage.type
+        assert response["id"] == "sub1"
+        assert response["payload"]["data"] == {"flavorsInvalid": "CHOCOLATE"}
+
+        response = ws.receive_json()
+        assert response["type"] == CompleteMessage.type
+        assert response["id"] == "sub1"
 
         ws.close()
 
@@ -716,10 +762,10 @@ def test_single_result_operation_error(test_client):
         )
 
         response = ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0]["message"] == "You are not authorized"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0]["message"] == "You are not authorized"
 
 
 def test_single_result_operation_exception(test_client):
@@ -745,11 +791,11 @@ def test_single_result_operation_exception(test_client):
         )
 
         response = ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0].get("path") == ["exception"]
-        assert response["payload"][0]["message"] == "bummer"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0].get("path") == ["exception"]
+        assert response["payload"]["errors"][0]["message"] == "bummer"
 
 
 def test_single_result_duplicate_ids_sub(test_client):

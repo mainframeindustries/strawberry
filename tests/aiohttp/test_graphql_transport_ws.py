@@ -543,11 +543,11 @@ async def test_subscription_errors(aiohttp_client):
         )
 
         response = await ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0].get("path") == ["error"]
-        assert response["payload"][0]["message"] == "TEST ERR"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0].get("path") == ["error"]
+        assert response["payload"]["errors"][0]["message"] == "TEST ERR"
 
         await ws.close()
         assert ws.closed
@@ -880,10 +880,10 @@ async def test_single_result_operation_error(aiohttp_client):
         )
 
         response = await ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0]["message"] == "You are not authorized"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0]["message"] == "You are not authorized"
 
         await ws.close()
         assert ws.closed
@@ -915,11 +915,11 @@ async def test_single_result_operation_exception(aiohttp_client):
         )
 
         response = await ws.receive_json()
-        assert response["type"] == ErrorMessage.type
+        assert response["type"] == NextMessage.type
         assert response["id"] == "sub1"
-        assert len(response["payload"]) == 1
-        assert response["payload"][0].get("path") == ["exception"]
-        assert response["payload"][0]["message"] == "bummer"
+        assert len(response["payload"]["errors"]) == 1
+        assert response["payload"]["errors"][0].get("path") == ["exception"]
+        assert response["payload"]["errors"][0]["message"] == "bummer"
 
 
 async def test_single_result_duplicate_ids_sub(aiohttp_client):

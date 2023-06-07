@@ -134,9 +134,10 @@ async def test_subscription():
     	}
     """
 
+    sub = await schema.subscribe(query)
+
     index = 0
-    async for ok, result in schema.subscribe(query):
-        assert ok
+    async for result in sub:
         assert not result.errors
         assert result.data == {"count": index}
 

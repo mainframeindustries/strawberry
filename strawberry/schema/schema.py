@@ -60,15 +60,6 @@ DEFAULT_ALLOWED_OPERATION_TYPES = {
 }
 
 
-class SubscribeSingleResult(RuntimeError):
-    """Raised when Schema.subscribe() returns a single execution result, instead of a
-    subscription generator, typically as a result of validation errors.
-    """
-
-    def __init__(self, value: ExecutionResult) -> None:
-        self.value = value
-
-
 class Schema(BaseSchema):
     def __init__(
         self,

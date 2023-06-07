@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional, cast
 from graphql import GraphQLError
 from graphql.error.graphql_error import format_error as format_graphql_error
 
-from strawberry.schema import SubscribeSingleResult
 from strawberry.subscriptions.protocols.graphql_ws import (
     GQL_COMPLETE,
     GQL_CONNECTION_ACK,
@@ -21,6 +20,7 @@ from strawberry.subscriptions.protocols.graphql_ws import (
     GQL_START,
     GQL_STOP,
 )
+from strawberry.types import ExecutionResult
 from strawberry.utils.debug import pretty_print_graphql_operation
 
 if TYPE_CHECKING:
@@ -124,13 +124,26 @@ class BaseGraphQLWSHandler(ABC):
         if self.debug:
             pretty_print_graphql_operation(operation_name, query, variables)
 
-        result_source = self.schema.subscribe(
-            query=query,
-            variable_values=variables,
-            operation_name=operation_name,
-            context_value=context,
-            root_value=root_value,
-        )
+        try:
+            result_source = await self.schema.subscribe(
+                query=query,
+                variable_values=variables,
+                operation_name=operation_name,
+                context_value=context,
+                root_value=root_value,
+            )
+        except GraphQLError as error:
+            error_payload = format_graphql_error(error)
+            await self.send_message(GQL_ERROR, operation_id, error_payload)
+            self.schema.process_errors([error])
+            return
+
+        if isinstance(result_source, ExecutionResult):
+            assert result_source.errors
+            error_payload = format_graphql_error(result_source.errors[0])
+            await self.send_message(GQL_ERROR, operation_id, error_payload)
+            self.schema.process_errors(result_source.errors)
+            return
 
         self.subscriptions[operation_id] = result_source
         result_handler = self.handle_async_results(result_source, operation_id)
@@ -152,29 +165,19 @@ class BaseGraphQLWSHandler(ABC):
         operation_id: str,
     ) -> None:
         try:
-            try:
-                async for result in result_source:
-                    payload = {"data": result.data}
-                    if result.errors:
-                        payload["errors"] = [
-                            format_graphql_error(err) for err in result.errors
-                        ]
-                    if result.extensions:
-                        payload["extensions"] = result.extensions
-                    await self.send_message(GQL_DATA, operation_id, payload)
-                    # log errors after send_message to prevent potential
-                    # slowdown of sending result
-                    if result.errors:
-                        self.schema.process_errors(result.errors)
-            except SubscribeSingleResult as single_result:
-                result = single_result.value
-                assert result.errors
-                error_payload = format_graphql_error(result.errors[0])
-                await self.send_message(GQL_ERROR, operation_id, error_payload)
-                self.schema.process_errors(result.errors)
-                return
-            finally:
-                await result_source.aclose()
+            async for result in result_source:
+                payload = {"data": result.data}
+                if result.errors:
+                    payload["errors"] = [
+                        format_graphql_error(err) for err in result.errors
+                    ]
+                if result.extensions:
+                    payload["extensions"] = result.extensions
+                await self.send_message(GQL_DATA, operation_id, payload)
+                # log errors after send_message to prevent potential
+                # slowdown of sending result
+                if result.errors:
+                    self.schema.process_errors(result.errors)
         except asyncio.CancelledError:
             # CancelledErrors are expected during task cleanup.
             pass
@@ -188,16 +191,20 @@ class BaseGraphQLWSHandler(ABC):
                 {"data": None, "errors": [format_graphql_error(error)]},
             )
             self.schema.process_errors([error])
+        finally:
+            await result_source.aclose()
 
         await self.send_message(GQL_COMPLETE, operation_id, None)
 
     async def cleanup_operation(self, operation_id: str) -> None:
-        iterator = self.subscriptions.pop(operation_id)
-        task = self.tasks.pop(operation_id)
-        task.cancel()
         with suppress(BaseException):
-            await task
-        await iterator.aclose()
+            await self.subscriptions[operation_id].aclose()
+        del self.subscriptions[operation_id]
+
+        self.tasks[operation_id].cancel()
+        with suppress(BaseException):
+            await self.tasks[operation_id]
+        del self.tasks[operation_id]
 
     async def send_message(
         self,

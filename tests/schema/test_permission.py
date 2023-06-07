@@ -4,7 +4,6 @@ import pytest
 
 import strawberry
 from strawberry.permission import BasePermission
-from strawberry.schema import SubscribeSingleResult
 from strawberry.types import Info
 
 
@@ -76,10 +75,7 @@ async def test_raises_permission_error_for_subscription():
 
     query = "subscription { user }"
 
-    with pytest.raises(SubscribeSingleResult) as err:
-        async for result in schema.subscribe(query):
-            pass
-    result = err.value.value
+    result = await schema.subscribe(query)
     assert result.errors[0].message == "You are not authorized"
 
 

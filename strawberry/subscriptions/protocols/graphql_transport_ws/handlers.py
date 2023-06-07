@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Dict, List, Opt
 from graphql import GraphQLError, GraphQLSyntaxError, parse
 from graphql.error.graphql_error import format_error as format_graphql_error
 
-from strawberry.schema import SubscribeSingleResult
 from strawberry.subscriptions.protocols.graphql_transport_ws.types import (
     CompleteMessage,
     ConnectionAckMessage,
@@ -21,6 +20,7 @@ from strawberry.subscriptions.protocols.graphql_transport_ws.types import (
     SubscribeMessage,
     SubscribeMessagePayload,
 )
+from strawberry.types import ExecutionResult
 from strawberry.types.graphql import OperationType
 from strawberry.unset import UNSET
 from strawberry.utils.debug import pretty_print_graphql_operation
@@ -33,7 +33,6 @@ if TYPE_CHECKING:
     from strawberry.subscriptions.protocols.graphql_transport_ws.types import (
         GraphQLTransportMessage,
     )
-    from strawberry.types import ExecutionResult
 
 
 class BaseGraphQLTransportWSHandler(ABC):
@@ -227,7 +226,7 @@ class BaseGraphQLTransportWSHandler(ABC):
 
         # Get an AsyncGenerator yielding the results
         if operation_type == OperationType.SUBSCRIPTION:
-            result_source = self.schema.subscribe(
+            result_source = await self.schema.subscribe(
                 query=message.payload.query,
                 variable_values=message.payload.variables,
                 operation_name=message.payload.operationName,
@@ -237,21 +236,25 @@ class BaseGraphQLTransportWSHandler(ABC):
         else:
             # create AsyncGenerator returning a single result
             async def get_result_source():
-                raise SubscribeSingleResult(
-                    await self.schema.execute(
-                        query=message.payload.query,
-                        variable_values=message.payload.variables,
-                        context_value=context,
-                        root_value=root_value,
-                        operation_name=message.payload.operationName,
-                    )
+                yield await self.schema.execute(
+                    query=message.payload.query,
+                    variable_values=message.payload.variables,
+                    context_value=context,
+                    root_value=root_value,
+                    operation_name=message.payload.operationName,
                 )
-                # need a yield here to turn this into an async generator
-                yield None  # pragma: no cover
 
             result_source = get_result_source()
 
         operation = Operation(self, message.id)
+
+        # Handle initial validation errors
+        if isinstance(result_source, ExecutionResult):
+            assert result_source.errors
+            payload = [format_graphql_error(result_source.errors[0])]
+            await self.send_message(ErrorMessage(id=message.id, payload=payload))
+            self.schema.process_errors(result_source.errors)
+            return
 
         # Create task to handle this subscription, reserve the operation ID
         self.subscriptions[message.id] = result_source
@@ -294,15 +297,19 @@ class BaseGraphQLTransportWSHandler(ABC):
         operation: Operation,
     ) -> None:
         try:
-            try:
-                async for result in result_source:
-                    await self.send_result(operation, result)
-                    if result.errors:
-                        return  # terminate subscription
-            except SubscribeSingleResult as single_result:
-                await self.send_result(operation, single_result.value)
-            finally:
-                await result_source.aclose()
+            async for result in result_source:
+                if result.errors:
+                    error_payload = [format_graphql_error(err) for err in result.errors]
+                    error_message = ErrorMessage(id=operation.id, payload=error_payload)
+                    await operation.send_message(error_message)
+                    self.schema.process_errors(result.errors)
+                    return
+                else:
+                    next_payload = {"data": result.data}
+                    if result.extensions:
+                        next_payload["extensions"] = result.extensions
+                    next_message = NextMessage(id=operation.id, payload=next_payload)
+                    await operation.send_message(next_message)
         except asyncio.CancelledError:
             # CancelledErrors are expected during task cleanup.
             raise
@@ -315,19 +322,6 @@ class BaseGraphQLTransportWSHandler(ABC):
             await operation.send_message(error_message)
             self.schema.process_errors([error])
             return
-
-    async def send_result(self, operation: Operation, result: ExecutionResult) -> None:
-        if result.errors:
-            error_payload = [format_graphql_error(err) for err in result.errors]
-            error_message = ErrorMessage(id=operation.id, payload=error_payload)
-            await operation.send_message(error_message)
-            self.schema.process_errors(result.errors)
-        else:
-            next_payload = {"data": result.data}
-            if result.extensions:
-                next_payload["extensions"] = result.extensions
-            next_message = NextMessage(id=operation.id, payload=next_payload)
-            await operation.send_message(next_message)
 
     def forget_id(self, id: str) -> None:
         # de-register the operation id making it immediately available

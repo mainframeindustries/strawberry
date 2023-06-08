@@ -25,9 +25,11 @@ async def test_subscription():
 
     query = "subscription { example }"
 
-    async for result in await schema.subscribe(query):
-        assert not result.errors
-        assert result.data["example"] == "Hi"
+    sub = await schema.subscribe(query)
+    result = await sub.__anext__()
+
+    assert not result.errors
+    assert result.data["example"] == "Hi"
 
 
 @pytest.mark.asyncio
@@ -46,9 +48,11 @@ async def test_subscription_with_arguments():
 
     query = 'subscription { example(name: "Nina") }'
 
-    async for result in await schema.subscribe(query):
-        assert not result.errors
-        assert result.data["example"] == "Hi Nina"
+    sub = await schema.subscribe(query)
+    result = await sub.__anext__()
+
+    assert not result.errors
+    assert result.data["example"] == "Hi Nina"
 
 
 requires_builtin_generics = pytest.mark.skipif(
@@ -87,6 +91,8 @@ async def test_subscription_return_annotations(return_annotation: str):
 
     query = "subscription { example }"
 
-    async for result in await schema.subscribe(query):
-        assert not result.errors
-        assert result.data["example"] == "Hi"
+    sub = await schema.subscribe(query)
+    result = await sub.__anext__()
+
+    assert not result.errors
+    assert result.data["example"] == "Hi"
